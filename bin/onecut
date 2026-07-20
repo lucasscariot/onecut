@@ -6,10 +6,11 @@ set -Eeuo pipefail
 #        onecut comments
 #
 # Source videos and comments.txt are read from the current folder.
-# Set VLOG_DIR to process a different folder.
+# Set ONECUT_DIR to process a different folder. VLOG_DIR remains supported as
+# an alias for compatibility with earlier local versions.
 # Timed comments are relative to the start of the footage (after the title card).
 
-INPUT_DIR="$(cd -- "${VLOG_DIR:-$PWD}" && pwd -P)"
+INPUT_DIR="$(cd -- "${ONECUT_DIR:-${VLOG_DIR:-$PWD}}" && pwd -P)"
 COMMENTS_FILE="$INPUT_DIR/comments.txt"
 FONT_REGULAR="${FONT_REGULAR:-/System/Library/Fonts/Supplemental/Arial.ttf}"
 FONT_BOLD="${FONT_BOLD:-/System/Library/Fonts/Supplemental/Arial Bold.ttf}"
@@ -35,7 +36,7 @@ if (( $# > 1 )) || [[ "$MODE" == "prepare-comments" && $# -ne 0 ]]; then
   exit 2
 fi
 
-OUTPUT_ARG="${1:-final_vlog.mp4}"
+OUTPUT_ARG="${1:-final_onecut.mp4}"
 if [[ "$OUTPUT_ARG" = /* ]]; then
   OUTPUT_FILE="$OUTPUT_ARG"
 else
@@ -205,6 +206,7 @@ display_file = Path(sys.argv[5])
 legacy_outputs = {
     "captioned_vlog.mp4",
     "final_vlog.mp4",
+    "final_onecut.mp4",
     "final_with_title.mp4",
     "title_card.mp4",
 }

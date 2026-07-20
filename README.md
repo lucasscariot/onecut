@@ -4,7 +4,7 @@ Turn a folder of video clips into one finished video.
 
 ```sh
 onecut comments       # generate or refresh comments.txt
-onecut                # create final_vlog.mp4
+onecut                # create final_onecut.mp4
 onecut holiday.mp4    # choose an output filename
 ```
 
@@ -44,7 +44,7 @@ On macOS with Homebrew: `brew install ffmpeg python pillow`.
 Run OneCut from the folder containing your clips, or point it at a folder:
 
 ```sh
-VLOG_DIR=/path/to/clips onecut
+ONECUT_DIR=/path/to/clips onecut
 ```
 
 `onecut comments` creates `comments.txt`. Add `TITLE:` and `DESC:` for an
