@@ -2,14 +2,8 @@
 
 set -Eeuo pipefail
 
-# Replace this after creating the public GitHub repository.
-ONECUT_REPO="${ONECUT_REPO:-YOUR_GITHUB_USERNAME/onecut}"
+ONECUT_REPO="${ONECUT_REPO:-lucasscariot/onecut}"
 BIN_DIR="${ONECUT_BIN_DIR:-$HOME/.local/bin}"
-
-if [[ "$ONECUT_REPO" == YOUR_GITHUB_USERNAME/* ]]; then
-  echo "ERROR: set ONECUT_REPO to your GitHub owner/repository before installing." >&2
-  exit 2
-fi
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "ERROR: curl is required to install OneCut." >&2

@@ -17,15 +17,15 @@ card, and overlays timed captions. `onecut-comments` is shorthand for
 For now, clone the repository and run it from the checkout:
 
 ```sh
-git clone https://github.com/YOUR_GITHUB_USERNAME/onecut.git
+git clone https://github.com/lucasscariot/onecut.git
 cd onecut
 ./bin/onecut comments
 ```
 
-After the GitHub repository exists, the installer will support:
+Install directly with:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/onecut/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lucasscariot/onecut/main/install.sh | bash
 ```
 
 It installs `onecut` and `onecut-comments` in `~/.local/bin`. Make sure that
