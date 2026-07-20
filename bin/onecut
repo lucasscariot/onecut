@@ -1,0 +1,1171 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+
+# Usage: onecut [output.mp4]
+#        onecut comments
+#
+# Source videos and comments.txt are read from the current folder.
+# Set VLOG_DIR to process a different folder.
+# Timed comments are relative to the start of the footage (after the title card).
+
+INPUT_DIR="$(cd -- "${VLOG_DIR:-$PWD}" && pwd -P)"
+COMMENTS_FILE="$INPUT_DIR/comments.txt"
+FONT_REGULAR="${FONT_REGULAR:-/System/Library/Fonts/Supplemental/Arial.ttf}"
+FONT_BOLD="${FONT_BOLD:-/System/Library/Fonts/Supplemental/Arial Bold.ttf}"
+DISPLAY_SECONDS="${DISPLAY_SECONDS:-4}"
+TITLE_SECONDS="${TITLE_SECONDS:-5}"
+OUTPUT_SIZE="${OUTPUT_SIZE:-auto}"
+OUTPUT_FPS="${OUTPUT_FPS:-auto}"
+MAX_LONG_EDGE_OVERRIDE="${MAX_LONG_EDGE:-}"
+MAX_SHORT_EDGE_OVERRIDE="${MAX_SHORT_EDGE:-}"
+MAX_FPS="${MAX_FPS:-60}"
+VIDEO_BITRATE="${VIDEO_BITRATE:-auto}"
+QUALITY_PRESET="${EXPORT_QUALITY:-}"
+
+MODE="render"
+if [[ "${1:-}" == "comments" || "${1:-}" == "--prepare-comments" ]]; then
+  MODE="prepare-comments"
+  shift
+fi
+
+if (( $# > 1 )) || [[ "$MODE" == "prepare-comments" && $# -ne 0 ]]; then
+  echo "Usage: onecut [output.mp4]" >&2
+  echo "       onecut comments" >&2
+  exit 2
+fi
+
+OUTPUT_ARG="${1:-final_vlog.mp4}"
+if [[ "$OUTPUT_ARG" = /* ]]; then
+  OUTPUT_FILE="$OUTPUT_ARG"
+else
+  OUTPUT_FILE="$INPUT_DIR/$OUTPUT_ARG"
+fi
+
+case "$OUTPUT_FILE" in
+  *.mp4|*.MP4) ;;
+  *)
+    echo "ERROR: the output filename must end in .mp4" >&2
+    exit 2
+    ;;
+esac
+
+OUTPUT_DIRECTORY="$(dirname -- "$OUTPUT_FILE")"
+OUTPUT_BASENAME="$(basename -- "$OUTPUT_FILE")"
+OUTPUT_PARTIAL="$OUTPUT_DIRECTORY/.${OUTPUT_BASENAME}.partial.mp4"
+
+for command_name in ffmpeg ffprobe python3; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "ERROR: '$command_name' is required but was not found." >&2
+    exit 1
+  fi
+done
+
+if [[ "$MODE" == "render" ]]; then
+  if [[ ! -f "$COMMENTS_FILE" ]]; then
+    echo "ERROR: comments.txt was not found in $INPUT_DIR." >&2
+    echo "Run 'onecut comments' to create it." >&2
+    exit 1
+  fi
+
+  find_font() {
+    for font_path in "$@"; do
+      if [[ -f "$font_path" ]]; then
+        printf '%s\n' "$font_path"
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  if [[ ! -f "$FONT_REGULAR" ]]; then
+    FONT_REGULAR="$(find_font \
+      "/System/Library/Fonts/Supplemental/Arial.ttf" \
+      "/Library/Fonts/Arial.ttf" \
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" \
+      "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf" \
+      "/c/Windows/Fonts/arial.ttf" || true)"
+  fi
+  if [[ ! -f "$FONT_REGULAR" ]] && command -v fc-match >/dev/null 2>&1; then
+    FONT_REGULAR="$(fc-match -f '%{file}\n' sans-serif | sed -n '1p')"
+  fi
+  if [[ ! -f "$FONT_BOLD" ]]; then
+    FONT_BOLD="$(find_font \
+      "/System/Library/Fonts/Supplemental/Arial Bold.ttf" \
+      "/Library/Fonts/Arial Bold.ttf" \
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" \
+      "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" \
+      "/c/Windows/Fonts/arialbd.ttf" || true)"
+  fi
+  if [[ ! -f "$FONT_BOLD" ]] && command -v fc-match >/dev/null 2>&1; then
+    FONT_BOLD="$(fc-match -f '%{file}\n' 'sans-serif:style=Bold' | sed -n '1p')"
+  fi
+  if [[ ! -f "$FONT_REGULAR" || ! -f "$FONT_BOLD" ]]; then
+    echo "ERROR: no suitable regular and bold TrueType fonts were found." >&2
+    echo "Set FONT_REGULAR and FONT_BOLD to .ttf font paths." >&2
+    exit 1
+  fi
+
+  if ! python3 -c 'from PIL import Image, ImageDraw, ImageFont' >/dev/null 2>&1; then
+    echo "ERROR: Python Pillow is required to render comments." >&2
+    echo "Install it with: python3 -m pip install Pillow" >&2
+    exit 1
+  fi
+
+  if ! [[ "$DISPLAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+     ! [[ "$TITLE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "ERROR: DISPLAY_SECONDS and TITLE_SECONDS must be positive numbers." >&2
+    exit 2
+  fi
+fi
+
+if [[ -z "$QUALITY_PRESET" && -f "$COMMENTS_FILE" ]]; then
+  QUALITY_PRESET="$(sed -n 's/^[[:space:]]*QUALITY:[[:space:]]*//p' "$COMMENTS_FILE" | sed -n '1p')"
+fi
+QUALITY_PRESET="${QUALITY_PRESET:-youtube-4k}"
+
+case "$QUALITY_PRESET" in
+  youtube-1080|youtube-1440|youtube-4k) ;;
+  *)
+    echo "ERROR: unknown export quality '$QUALITY_PRESET'." >&2
+    echo "Use youtube-1080, youtube-1440, or youtube-4k." >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$MODE" == "prepare-comments" && -z "${EXPORT_QUALITY:-}" && -t 0 ]]; then
+  case "$QUALITY_PRESET" in
+    youtube-1080) current_quality=1 ;;
+    youtube-1440) current_quality=2 ;;
+    youtube-4k) current_quality=3 ;;
+  esac
+
+  echo
+  echo "Choose the YouTube export quality:"
+  echo "  1) 1080p Compact  - smaller file, about 12 Mbps (18 Mbps at 48-60 fps)"
+  echo "  2) 1440p Balanced - sharper upload, about 24 Mbps (36 Mbps at 48-60 fps)"
+  echo "  3) 4K Maximum     - best quality, about 65 Mbps (98 Mbps at 48-60 fps)"
+  printf "Selection [%s]: " "$current_quality"
+  IFS= read -r quality_choice || quality_choice=""
+  quality_choice="${quality_choice:-$current_quality}"
+  case "$quality_choice" in
+    1) QUALITY_PRESET="youtube-1080" ;;
+    2) QUALITY_PRESET="youtube-1440" ;;
+    3) QUALITY_PRESET="youtube-4k" ;;
+    *)
+      echo "ERROR: choose 1, 2, or 3." >&2
+      exit 2
+      ;;
+  esac
+fi
+
+case "$QUALITY_PRESET" in
+  youtube-1080)
+    PRESET_LONG_EDGE=1920
+    PRESET_SHORT_EDGE=1080
+    ;;
+  youtube-1440)
+    PRESET_LONG_EDGE=2560
+    PRESET_SHORT_EDGE=1440
+    ;;
+  youtube-4k)
+    PRESET_LONG_EDGE=3840
+    PRESET_SHORT_EDGE=2160
+    ;;
+esac
+MAX_LONG_EDGE="${MAX_LONG_EDGE_OVERRIDE:-$PRESET_LONG_EDGE}"
+MAX_SHORT_EDGE="${MAX_SHORT_EDGE_OVERRIDE:-$PRESET_SHORT_EDGE}"
+
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/make_vlog.XXXXXX")"
+cleanup() {
+  case "$WORK_DIR" in
+    "${TMPDIR:-/tmp}"/make_vlog.*) rm -rf -- "$WORK_DIR" ;;
+  esac
+}
+trap cleanup EXIT INT TERM
+
+cd "$INPUT_DIR"
+
+echo "== Finding and sorting source clips =="
+python3 - "$INPUT_DIR" "$OUTPUT_FILE" "$OUTPUT_PARTIAL" "$WORK_DIR/sorted-files" "$WORK_DIR/sorted-display.txt" <<'PY'
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+source_dir = Path(sys.argv[1]).resolve()
+output_file = Path(sys.argv[2]).resolve()
+partial_file = Path(sys.argv[3]).resolve()
+list_file = Path(sys.argv[4])
+display_file = Path(sys.argv[5])
+
+legacy_outputs = {
+    "captioned_vlog.mp4",
+    "final_vlog.mp4",
+    "final_with_title.mp4",
+    "title_card.mp4",
+}
+workflow_files = {"comments.txt", "make_vlog.sh", "prepare_comments.sh"}
+compact_filename_timestamp = re.compile(
+    r"(?<!\d)((?:19|20)\d{6})[T _.-]?(\d{6})(?!\d)"
+)
+separated_filename_timestamp = re.compile(
+    r"(?<!\d)((?:19|20)\d{2})[-_.](\d{2})[-_.](\d{2})"
+    r"[T _.-](\d{2})[-_.](\d{2})[-_.](\d{2})(?!\d)"
+)
+
+
+def timestamp_from_filename(name):
+    match = compact_filename_timestamp.search(name)
+    if match:
+        value = "".join(match.groups())
+        return dt.datetime.strptime(value, "%Y%m%d%H%M%S")
+    match = separated_filename_timestamp.search(name)
+    if match:
+        value = "".join(match.groups())
+        return dt.datetime.strptime(value, "%Y%m%d%H%M%S")
+    return None
+
+
+def probe_video(path):
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_streams", "-show_format",
+            "-of", "json", str(path),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return None
+
+    data = json.loads(result.stdout or "{}")
+    demuxers = set(data.get("format", {}).get("format_name", "").split(","))
+    if demuxers & {"tty", "image2", "image2pipe"}:
+        return None
+    video = next((
+        stream for stream in data.get("streams", [])
+        if stream.get("codec_type") == "video"
+        and not stream.get("disposition", {}).get("attached_pic")
+    ), None)
+    if video is None:
+        return None
+
+    duration_value = video.get("duration") or data.get("format", {}).get("duration")
+    try:
+        if float(duration_value) <= 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    values = [data.get("format", {}).get("tags", {}).get("creation_time")]
+    values.extend(
+        stream.get("tags", {}).get("creation_time")
+        for stream in data.get("streams", [])
+    )
+    for value in values:
+        if not value:
+            continue
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.timezone.utc)
+            return parsed.timestamp(), value, "metadata"
+        except ValueError:
+            pass
+    return (None, None, None)
+
+
+records = []
+for path in source_dir.iterdir():
+    if not path.is_file():
+        continue
+    if (
+        path.resolve() == output_file
+        or path.resolve() == partial_file
+        or path.name.lower() in legacy_outputs
+        or path.name.lower() in workflow_files
+    ):
+        continue
+
+    timestamp = probe_video(path)
+    if timestamp is None:
+        continue
+    if timestamp[0] is None:
+        parsed = timestamp_from_filename(path.name)
+        if parsed:
+            timestamp = (parsed.timestamp(), parsed.isoformat(), "filename")
+        else:
+            modified = path.stat().st_mtime
+            label = dt.datetime.fromtimestamp(modified).isoformat(timespec="seconds")
+            timestamp = (modified, label, "modified time")
+
+    records.append((*timestamp, path))
+
+records.sort(key=lambda item: (item[0], item[3].name.casefold()))
+if not records:
+    raise SystemExit("ERROR: no source videos were found in the selected folder.")
+
+with list_file.open("wb") as handle:
+    for _, _, _, path in records:
+        handle.write(os.fsencode(str(path)) + b"\0")
+
+with display_file.open("w", encoding="utf-8") as handle:
+    for _, label, source, path in records:
+        handle.write(f"{path.name}  [{label}; {source}]\n")
+PY
+
+nl -ba "$WORK_DIR/sorted-display.txt"
+
+sources=()
+while IFS= read -r -d '' source_file; do
+  sources+=("$source_file")
+done < "$WORK_DIR/sorted-files"
+
+echo "== Inspecting source quality =="
+SOURCE_INFO="$WORK_DIR/source-info.json"
+HAS_ZSCALE=0
+if ffmpeg -hide_banner -filters 2>/dev/null | grep ' zscale ' >/dev/null; then
+  HAS_ZSCALE=1
+fi
+python3 - "$SOURCE_INFO" "$OUTPUT_SIZE" "$OUTPUT_FPS" "$MAX_LONG_EDGE" \
+  "$MAX_SHORT_EDGE" "$MAX_FPS" "$VIDEO_BITRATE" "$QUALITY_PRESET" "$HAS_ZSCALE" "${sources[@]}" <<'PY'
+from collections import defaultdict
+from fractions import Fraction
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+output_path = Path(sys.argv[1])
+output_size = sys.argv[2]
+output_fps = sys.argv[3]
+try:
+    max_long_edge = int(sys.argv[4])
+    max_short_edge = int(sys.argv[5])
+    max_fps = Fraction(sys.argv[6])
+except (ValueError, ZeroDivisionError):
+    raise SystemExit("ERROR: MAX_LONG_EDGE, MAX_SHORT_EDGE and MAX_FPS must be positive numbers.")
+video_bitrate = sys.argv[7]
+quality_preset = sys.argv[8]
+has_zscale = sys.argv[9] == "1"
+source_paths = [Path(value) for value in sys.argv[10:]]
+
+if max_long_edge < 2 or max_short_edge < 2 or max_fps <= 0:
+    raise SystemExit("ERROR: MAX_LONG_EDGE, MAX_SHORT_EDGE and MAX_FPS must be positive numbers.")
+
+
+def parse_fraction(value, fallback):
+    try:
+        parsed = Fraction(value)
+        return parsed if parsed > 0 else fallback
+    except (TypeError, ValueError, ZeroDivisionError):
+        return fallback
+
+
+def make_even(value):
+    return max(2, int(round(value / 2)) * 2)
+
+
+def rotation_for(video):
+    rotation = video.get("tags", {}).get("rotate")
+    for side_data in video.get("side_data_list", []):
+        if side_data.get("rotation") is not None:
+            rotation = side_data["rotation"]
+            break
+    try:
+        return int(round(float(rotation) / 90) * 90) % 360
+    except (TypeError, ValueError):
+        return 0
+
+
+records = []
+
+for path in source_paths:
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(f"ERROR: ffprobe could not inspect {path.name}: {result.stderr.strip()}")
+
+    data = json.loads(result.stdout or "{}")
+    video = next((
+        stream for stream in data.get("streams", [])
+        if stream.get("codec_type") == "video"
+        and not stream.get("disposition", {}).get("attached_pic")
+    ), None)
+    audio = next(
+        (stream for stream in data.get("streams", []) if stream.get("codec_type") == "audio"),
+        None,
+    )
+    if video is None:
+        raise SystemExit(f"ERROR: no video stream was found in {path.name}.")
+
+    duration_value = video.get("duration") or data.get("format", {}).get("duration")
+    try:
+        duration = float(duration_value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"ERROR: could not determine the duration of {path.name}.")
+
+    fps_value = parse_fraction(video.get("avg_frame_rate"), Fraction(0, 1))
+    if fps_value <= 0:
+        fps_value = parse_fraction(video.get("r_frame_rate"), Fraction(30, 1))
+    fps_text = f"{fps_value.numerator}/{fps_value.denominator}"
+
+    pixel_format = video.get("pix_fmt") or "yuv420p"
+    bit_depth_match = re.search(r"(\d+)(?:le|be)$", pixel_format)
+    bit_depth = int(bit_depth_match.group(1)) if bit_depth_match else 8
+    try:
+        bit_depth = max(bit_depth, int(video.get("bits_per_raw_sample") or 0))
+    except ValueError:
+        pass
+
+    width = int(video["width"])
+    height = int(video["height"])
+    sar = parse_fraction((video.get("sample_aspect_ratio") or "1:1").replace(":", "/"), Fraction(1, 1))
+    display_width = make_even(width * float(sar))
+    display_height = make_even(height)
+    rotation = rotation_for(video)
+    if rotation in (90, 270):
+        display_width, display_height = display_height, display_width
+
+    color_transfer = video.get("color_transfer") or "unknown"
+    hdr = color_transfer in {"smpte2084", "arib-std-b67"}
+    records.append({
+        "path": str(path),
+        "codec_name": video.get("codec_name") or "unknown",
+        "width": width,
+        "height": height,
+        "display_width": display_width,
+        "display_height": display_height,
+        "rotation": rotation,
+        "fps": fps_text,
+        "fps_value": float(fps_value),
+        "pixel_format": pixel_format,
+        "bit_depth": bit_depth,
+        "color_transfer": color_transfer,
+        "color_primaries": video.get("color_primaries") or "unknown",
+        "color_space": video.get("color_space") or "unknown",
+        "hdr": hdr,
+        "duration": duration,
+        "has_audio": audio is not None,
+    })
+
+orientation_seconds = defaultdict(float)
+for item in records:
+    orientation = "landscape" if item["display_width"] >= item["display_height"] else "portrait"
+    orientation_seconds[orientation] += item["duration"]
+dominant_orientation = max(orientation_seconds, key=orientation_seconds.get)
+
+if output_size == "auto":
+    candidates = [
+        item for item in records
+        if ("landscape" if item["display_width"] >= item["display_height"] else "portrait")
+        == dominant_orientation
+    ]
+    canvas_source = max(
+        candidates,
+        key=lambda item: item["display_width"] * item["display_height"],
+    )
+    target_width = canvas_source["display_width"]
+    target_height = canvas_source["display_height"]
+    scale = min(
+        1.0,
+        max_long_edge / max(target_width, target_height),
+        max_short_edge / min(target_width, target_height),
+    )
+    target_width = make_even(target_width * scale)
+    target_height = make_even(target_height * scale)
+else:
+    size_match = re.fullmatch(r"(\d+)[xX](\d+)", output_size)
+    if not size_match:
+        raise SystemExit("ERROR: OUTPUT_SIZE must be 'auto' or WIDTHxHEIGHT, for example 1920x1080.")
+    target_width, target_height = map(int, size_match.groups())
+    if target_width < 2 or target_height < 2:
+        raise SystemExit("ERROR: OUTPUT_SIZE dimensions must be at least 2 pixels.")
+    target_width = make_even(target_width)
+    target_height = make_even(target_height)
+
+if output_fps == "auto":
+    fps_seconds = defaultdict(float)
+    fps_lookup = {}
+    for item in records:
+        fps = parse_fraction(item["fps"], Fraction(30, 1))
+        fps_seconds[fps] += item["duration"]
+        fps_lookup[fps] = fps
+    target_fps_value = max(fps_seconds, key=lambda fps: (fps_seconds[fps], float(fps)))
+else:
+    target_fps_value = parse_fraction(output_fps, Fraction(0, 1))
+    if target_fps_value <= 0:
+        raise SystemExit("ERROR: OUTPUT_FPS must be 'auto' or a positive number/rational such as 30 or 30000/1001.")
+target_fps_value = min(target_fps_value, max_fps)
+target_fps = f"{target_fps_value.numerator}/{target_fps_value.denominator}"
+
+if video_bitrate == "auto":
+    quality_settings = {
+        "youtube-1080": ("1080p Compact", 12, 1920 * 1080),
+        "youtube-1440": ("1440p Balanced", 24, 2560 * 1440),
+        "youtube-4k": ("4K Maximum", 65, 3840 * 2160),
+    }
+    _, reference_rate, reference_pixels = quality_settings[quality_preset]
+    fps_multiplier = 1.0 if float(target_fps_value) <= 30 else 1.5
+    rate = reference_rate * (target_width * target_height / reference_pixels) * fps_multiplier
+    video_bitrate = f"{max(6, min(200, round(rate)))}M"
+elif not re.fullmatch(r"\d+(?:\.\d+)?[kKmM]", video_bitrate):
+    raise SystemExit("ERROR: VIDEO_BITRATE must be 'auto' or a value such as 20M or 8000k.")
+
+settings = {
+    "width": target_width,
+    "height": target_height,
+    "fps": target_fps,
+    "ten_bit": any(item["bit_depth"] > 8 or item["hdr"] for item in records),
+    "has_hdr": any(item["hdr"] for item in records),
+    "has_zscale": has_zscale,
+    "video_bitrate": video_bitrate,
+    "quality_preset": quality_preset,
+    "dominant_orientation": dominant_orientation,
+    "sources": records,
+}
+output_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+depth = "10-bit" if settings["ten_bit"] else "8-bit"
+quality_labels = {
+    "youtube-1080": "1080p Compact",
+    "youtube-1440": "1440p Balanced",
+    "youtube-4k": "4K Maximum",
+}
+print(
+    f"Output ({quality_labels[quality_preset]}): "
+    f"{target_width}x{target_height} at {target_fps_value.numerator / target_fps_value.denominator:.3f} fps, "
+    f"{depth} HEVC at {video_bitrate}"
+)
+if len(orientation_seconds) > 1:
+    print(f"Mixed orientations: using a {dominant_orientation} canvas and padding the others")
+PY
+
+if [[ "$MODE" == "prepare-comments" ]]; then
+  python3 - "$COMMENTS_FILE" "$SOURCE_INFO" "$QUALITY_PRESET" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+comments_path = Path(sys.argv[1])
+settings = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+quality_preset = sys.argv[3]
+sources = settings["sources"]
+
+LEGACY_COMMENT = re.compile(r"^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)\s+(.+)$")
+LOCAL_BULLET_LONG = re.compile(r"^-\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)\s*(.*)$")
+LOCAL_BULLET_SHORT = re.compile(r"^-\s*(\d+):(\d{2}(?:\.\d+)?)\s*(.*)$")
+
+
+def parse_local_bullet(line):
+    match = LOCAL_BULLET_LONG.fullmatch(line)
+    if match:
+        hours, minutes, seconds, text = match.groups()
+        value = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        return value, text.strip()
+    match = LOCAL_BULLET_SHORT.fullmatch(line)
+    if match:
+        minutes, seconds, text = match.groups()
+        value = int(minutes) * 60 + float(seconds)
+        return value, text.strip()
+    if line.startswith("-"):
+        return 0.0, line[1:].strip()
+    return None
+
+
+def format_time(value, include_fraction=False):
+    value = max(0.0, value)
+    hours = int(value // 3600)
+    minutes = int((value % 3600) // 60)
+    seconds = value % 60
+    if include_fraction and abs(seconds - round(seconds)) > 0.0005:
+        second_text = f"{seconds:06.3f}".rstrip("0").rstrip(".")
+    else:
+        second_text = f"{int(round(seconds)):02d}"
+        if second_text == "60":
+            value = round(value)
+            hours = int(value // 3600)
+            minutes = int((value % 3600) // 60)
+            second_text = "00"
+    if hours:
+        return f"{hours}:{minutes:02d}:{second_text}"
+    return f"{minutes:02d}:{second_text}"
+
+
+title = ""
+description = ""
+comments_by_clip = {}
+orphan_comments = []
+existing_lines = []
+if comments_path.exists():
+    existing_lines = comments_path.read_text(encoding="utf-8-sig").splitlines()
+
+structured = any(line.strip().startswith("CLIP:") for line in existing_lines)
+current_clip = None
+legacy_comments = []
+
+for raw_line in existing_lines:
+    line = raw_line.strip()
+    if line.startswith("TITLE:"):
+        title = line[len("TITLE:"):].strip()
+    elif line.startswith("DESC:"):
+        description = line[len("DESC:"):].strip()
+    elif structured and line.startswith("CLIP:"):
+        current_clip = line[len("CLIP:"):].strip()
+        comments_by_clip.setdefault(current_clip, [])
+    elif structured and current_clip and line.startswith("-"):
+        parsed = parse_local_bullet(line)
+        if parsed and parsed[1]:
+            comments_by_clip[current_clip].append(parsed)
+    elif not structured:
+        match = LEGACY_COMMENT.fullmatch(line)
+        if match:
+            hours, minutes, seconds, text = match.groups()
+            absolute = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            legacy_comments.append((absolute, text))
+
+if legacy_comments:
+    offset = 0.0
+    boundaries = []
+    for source in sources:
+        end = offset + source["duration"]
+        boundaries.append((offset, end, Path(source["path"]).name))
+        offset = end
+    for absolute, text in legacy_comments:
+        destination = None
+        for index, (start, end, name) in enumerate(boundaries):
+            if absolute < end or index == len(boundaries) - 1:
+                destination = (name, absolute - start)
+                break
+        if destination:
+            name, local_time = destination
+            comments_by_clip.setdefault(name, []).append((max(0.0, local_time), text))
+
+source_names = {Path(source["path"]).name for source in sources}
+for name, items in comments_by_clip.items():
+    if name not in source_names:
+        orphan_comments.extend((name, local_time, text) for local_time, text in items)
+
+output = [
+    f"QUALITY: {quality_preset}",
+    f"TITLE: {title}",
+    f"DESC: {description}",
+    "",
+    "# Generated by onecut comments in the same order used by onecut.",
+    "# Export options: youtube-1080, youtube-1440, or youtube-4k.",
+    "# Each bullet timestamp is relative to that raw clip, not the final video.",
+    "# Format: - MM:SS Comment text   (HH:MM:SS also works)",
+    "# Empty placeholder bullets are ignored. Re-running the script preserves filled bullets.",
+]
+
+preserved_count = 0
+for source in sources:
+    name = Path(source["path"]).name
+    audio_label = "audio" if source["has_audio"] else "silent"
+    output.extend([
+        "",
+        f"CLIP: {name}",
+        f"# Duration: {format_time(source['duration'], include_fraction=True)} | "
+        f"{source['display_width']}x{source['display_height']} | "
+        f"{source['fps_value']:.3f} fps | {audio_label}",
+    ])
+    for local_time, text in sorted(comments_by_clip.get(name, []), key=lambda item: item[0]):
+        output.append(f"- {format_time(local_time, include_fraction=True)} {text}")
+        preserved_count += 1
+    output.extend(["- 00:00 ", "- 00:00 ", "- 00:00 "])
+
+if orphan_comments:
+    output.extend(["", "# Preserved comments whose clips are no longer present:"])
+    for name, local_time, text in orphan_comments:
+        output.append(f"# ORPHAN: {name} | {format_time(local_time, include_fraction=True)} | {text}")
+
+temporary_path = comments_path.with_name(f".{comments_path.name}.tmp")
+temporary_path.write_text("\n".join(output) + "\n", encoding="utf-8")
+os.replace(temporary_path, comments_path)
+print(f"Prepared {comments_path.name}: {len(sources)} clips, {preserved_count} filled comments preserved")
+PY
+  exit 0
+fi
+
+USE_VIDEOTOOLBOX_DECODE=0
+VIDEOTOOLBOX_HW_FORMAT=""
+if ffmpeg -hide_banner -hwaccels 2>/dev/null | grep -x 'videotoolbox' >/dev/null &&
+   ffmpeg -hide_banner -pix_fmts 2>/dev/null | grep '[[:space:]]videotoolbox_vld[[:space:]]' >/dev/null; then
+  VIDEOTOOLBOX_HW_FORMAT="videotoolbox_vld"
+
+  if python3 - "$SOURCE_INFO" "$WORK_DIR/videotoolbox-preflight" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+settings = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+output_path = Path(sys.argv[2])
+supported_codecs = {"h264", "hevc"}
+supported_pixel_formats = {"yuv420p", "yuvj420p", "nv12", "yuv420p10le", "p010le"}
+
+unsupported = [
+    source for source in settings["sources"]
+    if source["codec_name"] not in supported_codecs
+    or source["pixel_format"] not in supported_pixel_formats
+    or source["rotation"] != 0
+]
+if unsupported:
+    names = ", ".join(Path(source["path"]).name for source in unsupported[:3])
+    if len(unsupported) > 3:
+        names += f", and {len(unsupported) - 3} more"
+    print(f"Hardware decoding: software fallback for unsupported source(s): {names}")
+    raise SystemExit(1)
+
+with output_path.open("wb") as handle:
+    for source in settings["sources"]:
+        download_format = "p010le" if source["bit_depth"] > 8 else "nv12"
+        handle.write(os.fsencode(source["path"]) + b"\0")
+        handle.write(download_format.encode("ascii") + b"\0")
+PY
+  then
+    videotoolbox_preflight_ok=1
+    while IFS= read -r -d '' source_file && IFS= read -r -d '' download_format; do
+      if ! ffmpeg -hide_banner -loglevel error -nostats -nostdin \
+        -hwaccel videotoolbox -hwaccel_output_format "$VIDEOTOOLBOX_HW_FORMAT" \
+        -i "$source_file" -map 0:v:0 -frames:v 1 \
+        -vf "hwdownload,format=$download_format" -f null - \
+        2>"$WORK_DIR/videotoolbox-preflight-error.log"; then
+        echo "Hardware decoding: software fallback for $(basename -- "$source_file")"
+        videotoolbox_preflight_ok=0
+        break
+      fi
+    done < "$WORK_DIR/videotoolbox-preflight"
+
+    if [[ "$videotoolbox_preflight_ok" == "1" ]]; then
+      USE_VIDEOTOOLBOX_DECODE=1
+      echo "Hardware decoding: VideoToolbox"
+    fi
+  fi
+else
+  echo "Hardware decoding: unavailable; using software decoding"
+fi
+
+if [[ "$HAS_ZSCALE" == "0" ]] && python3 - "$SOURCE_INFO" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+settings = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+raise SystemExit(0 if settings["has_hdr"] else 1)
+PY
+then
+  echo "ERROR: HDR footage was detected, but this FFmpeg build has no zscale filter." >&2
+  echo "Install an FFmpeg build with libzimg/zscale so HDR can be tone-mapped safely." >&2
+  exit 1
+fi
+
+echo "== Reading comments.txt =="
+python3 - "$COMMENTS_FILE" "$WORK_DIR" "$FONT_REGULAR" "$FONT_BOLD" "$DISPLAY_SECONDS" "$TITLE_SECONDS" "$SOURCE_INFO" "$USE_VIDEOTOOLBOX_DECODE" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+from PIL import Image, ImageDraw, ImageFont
+
+comments_path = Path(sys.argv[1])
+work_dir = Path(sys.argv[2])
+regular_path = sys.argv[3]
+bold_path = sys.argv[4]
+display_seconds = float(sys.argv[5])
+title_seconds = float(sys.argv[6])
+settings = json.loads(Path(sys.argv[7]).read_text(encoding="utf-8"))
+use_videotoolbox_decode = sys.argv[8] == "1"
+
+WIDTH, HEIGHT = settings["width"], settings["height"]
+FPS = settings["fps"]
+PIXEL_FORMAT = "yuv420p10le" if settings["ten_bit"] else "yuv420p"
+OVERLAY_FORMAT = "yuv420p10" if settings["ten_bit"] else "yuv420"
+SCALE = min(WIDTH / 1920, HEIGHT / 1080)
+LEGACY_TIMESTAMP = re.compile(r"^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)\s+(.+)$")
+LOCAL_BULLET_LONG = re.compile(r"^-\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)\s*(.*)$")
+LOCAL_BULLET_SHORT = re.compile(r"^-\s*(\d+):(\d{2}(?:\.\d+)?)\s*(.*)$")
+
+
+def px(value):
+    return max(1, round(value * SCALE))
+
+
+def fit_font(draw, text, font_path, initial_size, minimum_size, max_width):
+    for size in range(initial_size, minimum_size - 1, -max(2, px(2))):
+        font = ImageFont.truetype(font_path, size)
+        if draw.textbbox((0, 0), text, font=font)[2] <= max_width:
+            return font
+    return ImageFont.truetype(font_path, minimum_size)
+
+
+def wrap_pixels(draw, text, font, max_width):
+    lines = []
+    for paragraph in text.splitlines() or [""]:
+        words = paragraph.split()
+        if not words:
+            lines.append("")
+            continue
+        current = words.pop(0)
+        for word in words:
+            candidate = f"{current} {word}"
+            if draw.textbbox((0, 0), candidate, font=font)[2] <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+    return "\n".join(lines)
+
+
+title = ""
+description = ""
+captions = []
+source_sections = {}
+source_offset = 0.0
+for source in settings["sources"]:
+    name = Path(source["path"]).name
+    source_sections[name] = {
+        "offset": source_offset,
+        "duration": source["duration"],
+    }
+    source_offset += source["duration"]
+
+current_clip = None
+for line_number, raw_line in enumerate(
+    comments_path.read_text(encoding="utf-8-sig").splitlines(), start=1
+):
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("QUALITY:"):
+        continue
+    if line.startswith("TITLE:"):
+        title = line.removeprefix("TITLE:").strip()
+        continue
+    if line.startswith("DESC:"):
+        description = line.removeprefix("DESC:").strip()
+        continue
+    if line.startswith("CLIP:"):
+        clip_name = line.removeprefix("CLIP:").strip()
+        if clip_name not in source_sections:
+            raise SystemExit(
+                f"ERROR: comments.txt line {line_number} references a clip that is not present: "
+                f"{clip_name!r}\nRun 'onecut comments' to refresh the file list."
+            )
+        current_clip = clip_name
+        continue
+    if line.startswith("-"):
+        if current_clip is None:
+            raise SystemExit(
+                f"ERROR: comments.txt line {line_number} is a bullet outside a CLIP section."
+            )
+        if line == "-":
+            continue
+
+        match = LOCAL_BULLET_LONG.fullmatch(line)
+        if match:
+            hours, minutes, seconds, text = match.groups()
+            if int(minutes) > 59 or float(seconds) >= 60:
+                raise SystemExit(f"ERROR: invalid clip timestamp on comments.txt line {line_number}.")
+            local_start = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        else:
+            match = LOCAL_BULLET_SHORT.fullmatch(line)
+            if match:
+                minutes, seconds, text = match.groups()
+                if float(seconds) >= 60:
+                    raise SystemExit(f"ERROR: invalid clip timestamp on comments.txt line {line_number}.")
+                local_start = int(minutes) * 60 + float(seconds)
+            else:
+                text = line[1:].strip()
+                local_start = 0.0
+
+        text = text.strip()
+        if not text:
+            continue
+        clip = source_sections[current_clip]
+        if local_start >= clip["duration"]:
+            raise SystemExit(
+                f"ERROR: comments.txt line {line_number} is at {local_start:.3f}s, "
+                f"past the end of {current_clip} ({clip['duration']:.3f}s)."
+            )
+        start = clip["offset"] + local_start
+        captions.append((start, start + display_seconds, text))
+        continue
+
+    match = LEGACY_TIMESTAMP.fullmatch(line)
+    if not match:
+        raise SystemExit(
+            f"ERROR: invalid comments.txt line {line_number}: {raw_line!r}\n"
+            "Expected a CLIP section bullet or: HH:MM:SS comment text"
+        )
+    hours, minutes, seconds, text = match.groups()
+    if int(minutes) > 59 or float(seconds) >= 60:
+        raise SystemExit(f"ERROR: invalid timestamp on comments.txt line {line_number}.")
+    start = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    captions.append((start, start + display_seconds, text))
+
+footage_duration = sum(source["duration"] for source in settings["sources"])
+for start, _, text in captions:
+    if start >= footage_duration:
+        print(
+            f"WARNING: comment at {start:.3f}s is beyond the {footage_duration:.3f}s footage: {text}",
+            file=sys.stderr,
+        )
+
+has_title = bool(title or description)
+if has_title:
+    image = Image.new("RGB", (WIDTH, HEIGHT), "black")
+    draw = ImageDraw.Draw(image)
+
+    if title:
+        title_font = fit_font(draw, title, bold_path, px(72), px(42), WIDTH - px(240))
+        wrapped_title = wrap_pixels(draw, title, title_font, WIDTH - px(240))
+    else:
+        title_font = ImageFont.truetype(bold_path, px(72))
+        wrapped_title = ""
+
+    description_font = ImageFont.truetype(regular_path, px(38))
+    wrapped_description = wrap_pixels(draw, description, description_font, WIDTH - px(320))
+    title_box = draw.multiline_textbbox(
+        (0, 0), wrapped_title, font=title_font, spacing=px(14), align="center"
+    ) if wrapped_title else (0, 0, 0, 0)
+    desc_box = draw.multiline_textbbox(
+        (0, 0), wrapped_description, font=description_font, spacing=px(10), align="center"
+    ) if wrapped_description else (0, 0, 0, 0)
+    gap = px(38) if wrapped_title and wrapped_description else 0
+    total_height = (title_box[3] - title_box[1]) + gap + (desc_box[3] - desc_box[1])
+    y = (HEIGHT - total_height) / 2
+
+    if wrapped_title:
+        draw.multiline_text(
+            (WIDTH / 2, y), wrapped_title, font=title_font, fill="white",
+            anchor="ma", align="center", spacing=px(14),
+        )
+        y += title_box[3] - title_box[1] + gap
+    if wrapped_description:
+        draw.multiline_text(
+            (WIDTH / 2, y), wrapped_description, font=description_font,
+            fill=(215, 215, 215), anchor="ma", align="center", spacing=px(10),
+        )
+    image.save(work_dir / "title.png")
+
+caption_font = ImageFont.truetype(bold_path, px(46))
+for index, (_, _, text) in enumerate(captions):
+    image = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    wrapped = wrap_pixels(draw, text, caption_font, WIDTH - px(300))
+    bounds = draw.multiline_textbbox(
+        (0, 0), wrapped, font=caption_font, spacing=px(12), align="center",
+        stroke_width=px(1),
+    )
+    text_width = bounds[2] - bounds[0]
+    text_height = bounds[3] - bounds[1]
+    padding_x, padding_y = px(28), px(20)
+    left = (WIDTH - text_width) / 2 - padding_x
+    top = HEIGHT - text_height - (2 * padding_y) - px(64)
+    right = (WIDTH + text_width) / 2 + padding_x
+    bottom = HEIGHT - px(64)
+    draw.rounded_rectangle(
+        (left, top, right, bottom), radius=px(18), fill=(0, 0, 0, 170)
+    )
+    draw.multiline_text(
+        (WIDTH / 2, top + padding_y - bounds[1]), wrapped,
+        font=caption_font, fill="white", anchor="ma", align="center",
+        spacing=px(12), stroke_width=px(1), stroke_fill=(0, 0, 0, 220),
+    )
+    image.save(work_dir / f"caption-{index:03d}.png")
+
+# The input order is: source clips, optional title image, then captions.
+parts = []
+concat_inputs = []
+for index, source in enumerate(settings["sources"]):
+    duration = source["duration"]
+    video_filter = (
+        f"[{index}:v:0]trim=duration={duration:.6f},setpts=PTS-STARTPTS"
+    )
+    if use_videotoolbox_decode:
+        download_format = "p010le" if source["bit_depth"] > 8 else "nv12"
+        video_filter += f",hwdownload,format={download_format}"
+
+    matches_canvas = (
+        source["rotation"] == 0
+        and source["width"] == WIDTH
+        and source["height"] == HEIGHT
+        and source["display_width"] == WIDTH
+        and source["display_height"] == HEIGHT
+    )
+    if not matches_canvas:
+        video_filter += (
+            f",scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease:"
+            f"force_divisible_by=2:reset_sar=1:flags=lanczos,"
+            f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+    video_filter += f",setsar=1,fps={FPS}"
+    if source["hdr"]:
+        video_filter += (
+            ",zscale=t=linear:npl=100,format=gbrpf32le,"
+            "zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+            f"zscale=t=bt709:m=bt709:r=tv,format={PIXEL_FORMAT}"
+        )
+    else:
+        video_filter += f",format={PIXEL_FORMAT}"
+    parts.append(video_filter + f"[clipv{index}]")
+    if source["has_audio"]:
+        parts.append(
+            f"[{index}:a:0]asetpts=PTS-STARTPTS,"
+            "aresample=48000:async=1:first_pts=0,apad,"
+            f"atrim=duration={duration:.6f},asetpts=PTS-STARTPTS,"
+            f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[clipa{index}]"
+        )
+    else:
+        parts.append(
+            "anullsrc=channel_layout=stereo:sample_rate=48000,"
+            f"atrim=duration={duration:.6f},asetpts=PTS-STARTPTS,"
+            f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[clipa{index}]"
+        )
+    concat_inputs.append(f"[clipv{index}][clipa{index}]")
+
+parts.append(
+    "".join(concat_inputs)
+    + f"concat=n={len(settings['sources'])}:v=1:a=1[basev][maina]"
+)
+
+input_index = len(settings["sources"])
+if has_title:
+    title_input = input_index
+    input_index += 1
+    parts.extend([
+        f"[{title_input}:v]loop=loop=-1:size=1:start=0,"
+        f"trim=duration={title_seconds:.3f},setpts=PTS-STARTPTS,"
+        f"fps={FPS},format={PIXEL_FORMAT}[titlev]",
+        f"anullsrc=channel_layout=stereo:sample_rate=48000,"
+        f"atrim=duration={title_seconds:.3f},asetpts=PTS-STARTPTS,"
+        f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[titlea]",
+    ])
+
+previous = "basev"
+for index, (start, end, _) in enumerate(captions):
+    caption_input = input_index
+    input_index += 1
+    overlay_name = f"caption{index}"
+    output_name = f"captioned{index}"
+    parts.append(f"[{caption_input}:v]format=rgba[{overlay_name}]")
+    parts.append(
+        f"[{previous}][{overlay_name}]overlay=0:0:"
+        f"enable='between(t,{start:.3f},{end:.3f})':"
+        f"eof_action=repeat:repeatlast=1:format={OVERLAY_FORMAT}[{output_name}]"
+    )
+    previous = output_name
+
+if has_title:
+    parts.append(
+        f"[titlev][titlea][{previous}][maina]"
+        "concat=n=2:v=1:a=1[outv][outa]"
+    )
+else:
+    parts.extend([f"[{previous}]null[outv]", "[maina]anull[outa]"])
+
+(work_dir / "filter-complex.txt").write_text(";\n".join(parts), encoding="utf-8")
+(work_dir / "render-info.txt").write_text(
+    f"{1 if has_title else 0}\n{len(captions)}\n"
+    f"{1 if settings['ten_bit'] else 0}\n{settings['video_bitrate']}\n",
+    encoding="ascii",
+)
+print(f"Title card: {'yes' if has_title else 'no'}")
+print(f"Timed comments: {len(captions)}")
+PY
+
+has_title="$(sed -n '1p' "$WORK_DIR/render-info.txt")"
+caption_count="$(sed -n '2p' "$WORK_DIR/render-info.txt")"
+use_ten_bit="$(sed -n '3p' "$WORK_DIR/render-info.txt")"
+selected_bitrate="$(sed -n '4p' "$WORK_DIR/render-info.txt")"
+
+if [[ "$use_ten_bit" == "1" ]]; then
+  software_video_encoder=(-c:v libx265 -preset medium -crf 14 -pix_fmt yuv420p10le)
+else
+  software_video_encoder=(-c:v libx265 -preset medium -crf 14 -pix_fmt yuv420p)
+fi
+
+VIDEO_ENCODER="${VIDEO_ENCODER:-auto}"
+using_videotoolbox_encoder=0
+case "$VIDEO_ENCODER" in
+  auto|videotoolbox)
+    if ffmpeg -hide_banner -encoders 2>/dev/null | grep 'hevc_videotoolbox' >/dev/null; then
+      if [[ "$use_ten_bit" == "1" ]]; then
+        video_encoder=(-c:v hevc_videotoolbox -profile:v main10 -pix_fmt p010le -b:v "$selected_bitrate")
+      else
+        video_encoder=(-c:v hevc_videotoolbox -profile:v main -pix_fmt yuv420p -b:v "$selected_bitrate")
+      fi
+      using_videotoolbox_encoder=1
+    elif [[ "$VIDEO_ENCODER" == "videotoolbox" ]]; then
+      echo "ERROR: hevc_videotoolbox is not available in this FFmpeg build." >&2
+      exit 1
+    else
+      video_encoder=("${software_video_encoder[@]}")
+    fi
+    ;;
+  libx265)
+    video_encoder=("${software_video_encoder[@]}")
+    ;;
+  *)
+    echo "ERROR: VIDEO_ENCODER must be auto, videotoolbox, or libx265." >&2
+    exit 2
+    ;;
+esac
+
+render_inputs=()
+for source_file in "${sources[@]}"; do
+  if [[ "$USE_VIDEOTOOLBOX_DECODE" == "1" ]]; then
+    render_inputs+=(-hwaccel videotoolbox -hwaccel_output_format "$VIDEOTOOLBOX_HW_FORMAT")
+  fi
+  render_inputs+=(-i "$source_file")
+done
+if [[ "$has_title" == "1" ]]; then
+  render_inputs+=(-i "$WORK_DIR/title.png")
+fi
+for ((index = 0; index < caption_count; index++)); do
+  render_inputs+=(-i "$(printf '%s/caption-%03d.png' "$WORK_DIR" "$index")")
+done
+
+echo "== Rendering ${#sources[@]} clips in one high-quality pass =="
+mkdir -p -- "$OUTPUT_DIRECTORY"
+
+render_video() {
+  ffmpeg -hide_banner -loglevel error -stats -nostdin -y \
+    "${render_inputs[@]}" \
+    -filter_complex_script "$WORK_DIR/filter-complex.txt" \
+    -map '[outv]' -map '[outa]' \
+    "$@" -fps_mode cfr -tag:v hvc1 \
+    -color_range tv -colorspace bt709 -color_trc bt709 -color_primaries bt709 \
+    -bsf:v hevc_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1 \
+    -c:a aac -b:a 384k -ar 48000 -ac 2 \
+    -video_track_timescale 90000 -movflags +faststart \
+    "$OUTPUT_PARTIAL"
+}
+
+if ! render_video "${video_encoder[@]}"; then
+  if [[ "$using_videotoolbox_encoder" == "1" && "$VIDEO_ENCODER" == "auto" ]]; then
+    echo "Hardware encoding failed; retrying with libx265." >&2
+    rm -f -- "$OUTPUT_PARTIAL"
+    render_video "${software_video_encoder[@]}"
+  else
+    exit 1
+  fi
+fi
+
+mv -f -- "$OUTPUT_PARTIAL" "$OUTPUT_FILE"
+
+duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUTPUT_FILE")"
+echo "Done: $OUTPUT_FILE (${duration%.*} seconds)"
