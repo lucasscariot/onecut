@@ -1,6 +1,6 @@
 # OneCut
 
-Turn a folder of video clips into one finished video.
+Turn a folder of video clips into one finished video with a self-contained CLI.
 
 ```sh
 onecut comments       # generate or refresh comments.txt
@@ -12,35 +12,33 @@ onecut trim-end 5 CAM_20260720134126_0039_D.MP4    # remove the final 5 seconds
 ```
 
 OneCut sorts clips chronologically, keeps their audio, adds an optional title
-card, and overlays timed captions. `onecut-comments` is shorthand for
-`onecut comments`.
+card, and overlays timed captions. `onecut-comments` remains available as
+shorthand for `onecut comments`.
 
 ## Install
 
-For now, clone the repository and run it from the checkout:
-
-```sh
-git clone https://github.com/lucasscariot/onecut.git
-cd onecut
-./bin/onecut comments
-```
-
-Install directly with:
+Install the latest macOS Apple Silicon binary with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lucasscariot/onecut/main/install.sh | bash
 ```
 
-It installs `onecut` and `onecut-comments` in `~/.local/bin`. Make sure that
-directory is on your `PATH`.
+It downloads a checksum-verified application directory to
+`~/.local/share/onecut`, links its executable into `~/.local/bin`, and adds the
+`onecut-comments` compatibility symlink. Make sure `~/.local/bin` is on your
+`PATH`. The application directory contains Python, Pillow, FFmpeg, and FFprobe.
+
+To install a specific release, set `ONECUT_VERSION`, for example:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lucasscariot/onecut/main/install.sh \
+  | ONECUT_VERSION=v0.2.0 bash
+```
 
 ## Requirements
 
-- FFmpeg, including `ffprobe`
-- Python 3
-- Pillow: `python3 -m pip install Pillow`
-
-On macOS with Homebrew: `brew install ffmpeg python pillow`.
+The packaged CLI has no runtime dependencies. Running from source requires
+Python 3.11+, Pillow, FFmpeg, and FFprobe.
 
 ## Use
 
@@ -74,14 +72,42 @@ Choose an upload preset when generating comments, or set
 
 ## Development
 
-Run the end-to-end smoke test with:
+Create a virtual environment and install the package:
 
 ```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[test,build]'
+```
+
+Run the unit and end-to-end tests with:
+
+```sh
+pytest
 ./tests/smoke-test.sh
 ```
 
-The tiny test clip is intentionally versioned. Source footage and rendered
-videos are ignored so this repository stays code-only.
+Build a self-contained application directory containing Python, Pillow,
+FFmpeg, and FFprobe:
+
+```sh
+python scripts/build.py
+./dist/onecut/onecut --version
+```
+
+The build uses `ffmpeg` and `ffprobe` from `PATH`. Set `ONECUT_FFMPEG_DIR` to
+bundle a specific matching pair. PyInstaller includes their linked libraries
+in the application directory, so normal commands do not unpack dependencies
+into a temporary directory at startup.
+
+The code is split by responsibility under `src/onecut`: CLI orchestration,
+media discovery and probing, comment parsing, Pillow overlay creation, and
+FFmpeg rendering. The tiny test clip is intentionally versioned; other source
+footage and rendered videos remain ignored.
+
+Tagged releases are built and smoke-tested on a GitHub-hosted macOS arm64
+runner before publication. Release assets also record the exact FFmpeg build
+configuration; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 

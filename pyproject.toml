@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "onecut"
+version = "0.2.0"
+description = "Turn a folder of video clips into one finished video"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Lucas Scariot" }]
+dependencies = ["Pillow>=11.0"]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+onecut = "onecut.cli:entrypoint"
+onecut-comments = "onecut.cli:comments_entrypoint"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/onecut"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+

@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build dependencies
+        run: |
+          brew install ffmpeg
+          python -m pip install '.[build,test]'
+      - name: Test source package
+        run: |
+          pytest
+          ./tests/smoke-test.sh
+      - name: Build self-contained binary
+        run: python scripts/build.py
+      - name: Test packaged binary
+        run: ONECUT_BIN="$PWD/dist/onecut/onecut" ./tests/smoke-test.sh
+      - name: Prepare release assets
+        run: |
+          tar -C dist -czf dist/onecut-darwin-arm64.tar.gz onecut
+          cd dist
+          shasum -a 256 onecut-darwin-arm64.tar.gz > onecut-darwin-arm64.tar.gz.sha256
+          ffmpeg -version > ffmpeg-build.txt
+          ffmpeg -buildconf >> ffmpeg-build.txt
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          dist/onecut-darwin-arm64.tar.gz
+          dist/onecut-darwin-arm64.tar.gz.sha256
+          dist/ffmpeg-build.txt
+          --generate-notes
