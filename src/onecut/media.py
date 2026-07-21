@@ -23,7 +23,7 @@ LEGACY_OUTPUTS = {
     "final_with_title.mp4",
     "title_card.mp4",
 }
-WORKFLOW_FILES = {"comments.txt", "make_vlog.sh", "prepare_comments.sh"}
+WORKFLOW_FILES = {"captions.txt", "comments.txt", "make_vlog.sh", "prepare_comments.sh"}
 COMPACT_TIMESTAMP = re.compile(r"(?<!\d)((?:19|20)\d{6})[T _.-]?(\d{6})(?!\d)")
 SEPARATED_TIMESTAMP = re.compile(
     r"(?<!\d)((?:19|20)\d{2})[-_.](\d{2})[-_.](\d{2})"

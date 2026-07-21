@@ -5,8 +5,8 @@ import sys
 import tempfile
 
 from onecut import __version__
-from onecut.comments import parse_comments, prepare_comments
-from onecut.config import Config
+from onecut.captions import parse_captions, prepare_captions
+from onecut.config import Config, resolve_input_dir
 from onecut.errors import OneCutError
 from onecut.images import create_overlays
 from onecut.media import (
@@ -20,20 +20,21 @@ from onecut.render import render_video
 
 
 USAGE = """Usage: onecut [output.mp4]
-       onecut comments
+       onecut captions
        onecut trim-start <seconds> <clip.mp4>
        onecut trim-end <seconds> <clip.mp4>
        onecut keep-first <seconds> <clip.mp4>
 
+captions creates or refreshes captions.txt.
 trim-start removes seconds from the beginning of a clip.
 trim-end removes seconds from the end of a clip.
 keep-first keeps only the first seconds of a clip."""
 
 
-def _output_paths(config: Config, argument: str | None) -> tuple[Path, Path]:
+def _output_paths(input_dir: Path, argument: str | None) -> tuple[Path, Path]:
     output = Path(argument or "final_onecut.mp4").expanduser()
     if not output.is_absolute():
-        output = config.input_dir / output
+        output = input_dir / output
     if output.suffix.lower() != ".mp4":
         raise OneCutError("the output filename must end in .mp4", 2)
     output = output.resolve()
@@ -43,9 +44,6 @@ def _output_paths(config: Config, argument: str | None) -> tuple[Path, Path]:
 
 def main(arguments: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if arguments is None else arguments)
-    invoked_as_comments = Path(sys.argv[0]).name == "onecut-comments"
-    if invoked_as_comments and not argv:
-        argv = ["comments"]
 
     if argv and argv[0] in {"-h", "--help"}:
         print(USAGE)
@@ -63,35 +61,43 @@ def main(arguments: list[str] | None = None) -> int:
             trim_clip(argv[0], argv[1], argv[2], ffmpeg, ffprobe)
             return 0
 
-        prepare_mode = bool(argv and argv[0] in {"comments", "--prepare-comments"})
+        prepare_mode = bool(argv and argv[0] == "captions")
         if prepare_mode:
             argv.pop(0)
         if len(argv) > 1 or (prepare_mode and argv):
             print(USAGE, file=sys.stderr)
             return 2
 
-        config = Config.load(prepare_comments=prepare_mode)
-        output_file, partial_file = _output_paths(config, argv[0] if argv else None)
-        if not prepare_mode and not config.comments_file.is_file():
-            raise OneCutError(
-                f"comments.txt was not found in {config.input_dir}.\n"
-                "Run 'onecut comments' to create it."
-            )
+        input_dir = resolve_input_dir()
+        output_file, partial_file = _output_paths(input_dir, argv[0] if argv else None)
+        captions_file = input_dir / "captions.txt"
+        legacy_captions_file = input_dir / "comments.txt"
+        previous_captions_file = captions_file
+        if not captions_file.is_file() and legacy_captions_file.is_file():
+            previous_captions_file = legacy_captions_file
+        if not prepare_mode:
+            captions_file = previous_captions_file
+            if not captions_file.is_file():
+                raise OneCutError(
+                    f"captions.txt was not found in {input_dir}.\n"
+                    "Run 'onecut captions' to create it."
+                )
         ffmpeg, ffprobe = resolve_media_tools()
         sources = discover_sources(
-            config.input_dir,
+            input_dir,
             output_file,
             partial_file,
             ffprobe,
         )
         print_sources(sources)
-        settings = determine_settings(config, sources, ffmpeg)
         if prepare_mode:
-            prepare_comments(config.comments_file, sources, config.quality)
+            prepare_captions(captions_file, sources, preserve_from=previous_captions_file)
             return 0
 
-        print("== Reading comments.txt ==")
-        copy = parse_comments(config.comments_file, sources, config.display_seconds)
+        config = Config.load(prompt_for_quality=True)
+        settings = determine_settings(config, sources, ffmpeg)
+        print(f"== Reading {captions_file.name} ==")
+        copy = parse_captions(captions_file, sources, config.display_seconds)
         with tempfile.TemporaryDirectory(prefix="onecut-") as temporary:
             work_dir = Path(temporary)
             title_path, caption_paths = create_overlays(work_dir, config, settings, copy)
@@ -120,7 +126,3 @@ def main(arguments: list[str] | None = None) -> int:
 
 def entrypoint() -> None:
     raise SystemExit(main())
-
-
-def comments_entrypoint() -> None:
-    raise SystemExit(main(["comments", *sys.argv[1:]]))

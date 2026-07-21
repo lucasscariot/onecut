@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-from onecut.comments import RenderCopy
+from onecut.captions import RenderCopy
 from onecut.config import Config
 from onecut.errors import OneCutError
 from onecut.media import RenderSettings

@@ -3,7 +3,7 @@
 Turn a folder of video clips into one finished video with a self-contained CLI.
 
 ```sh
-onecut comments       # generate or refresh comments.txt
+onecut captions       # generate or refresh captions.txt
 onecut                # create final_onecut.mp4
 onecut holiday.mp4    # choose an output filename
 onecut trim-start 22 CAM_20260720192120_0023_D.MP4  # remove the first 22 seconds
@@ -12,8 +12,7 @@ onecut trim-end 5 CAM_20260720134126_0039_D.MP4    # remove the final 5 seconds
 ```
 
 OneCut sorts clips chronologically, keeps their audio, adds an optional title
-card, and overlays timed captions. `onecut-comments` remains available as
-shorthand for `onecut comments`.
+card, and overlays timed captions.
 
 ## Install
 
@@ -24,9 +23,9 @@ curl -fsSL https://raw.githubusercontent.com/lucasscariot/onecut/main/install.sh
 ```
 
 It downloads a checksum-verified application directory to
-`~/.local/share/onecut`, links its executable into `~/.local/bin`, and adds the
-`onecut-comments` compatibility symlink. Make sure `~/.local/bin` is on your
-`PATH`. The application directory contains Python, Pillow, FFmpeg, and FFprobe.
+`~/.local/share/onecut`, links its executable into `~/.local/bin`, and makes
+`onecut` available on your `PATH`. The application directory contains Python,
+Pillow, FFmpeg, and FFprobe.
 
 To install a specific release, set `ONECUT_VERSION`, for example:
 
@@ -48,7 +47,7 @@ Run OneCut from the folder containing your clips, or point it at a folder:
 ONECUT_DIR=/path/to/clips onecut
 ```
 
-`onecut comments` creates `comments.txt`. Add `TITLE:` and `DESC:` for an
+`onecut captions` creates `captions.txt`. Add `TITLE:` and `DESC:` for an
 optional opening card, then add bullets under each `CLIP:` section. Timestamps
 are relative to the source clip, for example `- 00:12 A quiet morning`.
 
@@ -67,8 +66,9 @@ video/audio streams without re-encoding. Because a lossless cut must use a
 video keyframe, the actual video boundary can be slightly before or after the
 requested timestamp.
 
-Choose an upload preset when generating comments, or set
-`EXPORT_QUALITY=youtube-1080`, `youtube-1440`, or `youtube-4k`.
+When rendering in a terminal, choose an upload preset from the prompt. For
+non-interactive use, set `EXPORT_QUALITY=youtube-1080`, `youtube-1440`, or
+`youtube-4k`; otherwise OneCut defaults to 4K.
 
 ## Development
 

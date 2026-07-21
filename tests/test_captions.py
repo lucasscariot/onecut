@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from onecut.comments import format_time, parse_comments, parse_local_bullet
+from onecut.captions import (
+    format_time,
+    parse_captions,
+    parse_local_bullet,
+    prepare_captions,
+)
 from onecut.media import Source
 
 
@@ -41,16 +46,47 @@ def test_format_time_handles_rounding() -> None:
     assert format_time(3661.25, include_fraction=True) == "1:01:01.25"
 
 
-def test_parse_structured_comments(tmp_path: Path) -> None:
-    comments = tmp_path / "comments.txt"
-    comments.write_text(
+def test_parse_structured_captions(tmp_path: Path) -> None:
+    captions = tmp_path / "captions.txt"
+    captions.write_text(
         "TITLE: A day out\nDESC: In the hills\n\nCLIP: clip.mp4\n- 00:02 Hello\n",
         encoding="utf-8",
     )
-    parsed = parse_comments(comments, (source(),), 4.0)
+    parsed = parse_captions(captions, (source(),), 4.0)
     assert parsed.title == "A day out"
     assert parsed.description == "In the hills"
     assert [(item.start, item.end, item.text) for item in parsed.captions] == [
         (2.0, 6.0, "Hello")
     ]
 
+
+def test_parse_legacy_quality_line_is_ignored(tmp_path: Path) -> None:
+    captions = tmp_path / "comments.txt"
+    captions.write_text(
+        "QUALITY: youtube-1080\nTITLE: A day out\nDESC: In the hills\n\n"
+        "CLIP: clip.mp4\n- 00:02 Hello\n",
+        encoding="utf-8",
+    )
+    parsed = parse_captions(captions, (source(),), 4.0)
+    assert parsed.title == "A day out"
+    assert [(item.start, item.end, item.text) for item in parsed.captions] == [
+        (2.0, 6.0, "Hello")
+    ]
+
+
+def test_prepare_migrates_legacy_file_without_quality(tmp_path: Path) -> None:
+    legacy = tmp_path / "comments.txt"
+    legacy.write_text(
+        "QUALITY: youtube-1080\nTITLE: A day out\nDESC: In the hills\n\n"
+        "CLIP: clip.mp4\n- 00:02 Hello\n",
+        encoding="utf-8",
+    )
+    captions = tmp_path / "captions.txt"
+
+    prepare_captions(captions, (source(),), preserve_from=legacy)
+
+    content = captions.read_text(encoding="utf-8")
+    assert "QUALITY:" not in content
+    assert "TITLE: A day out" in content
+    assert "- 00:02 Hello" in content
+    assert legacy.is_file()

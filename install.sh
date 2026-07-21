@@ -61,7 +61,10 @@ if [[ -e "$old_install" ]]; then
   rm -rf -- "$old_install"
 fi
 ln -sfn "$INSTALL_DIR/onecut" "$BIN_DIR/onecut"
-ln -sfn onecut "$BIN_DIR/onecut-comments"
+legacy_command="$BIN_DIR/onecut-comments"
+if [[ -L "$legacy_command" && "$(readlink "$legacy_command")" == "onecut" ]]; then
+  rm -- "$legacy_command"
+fi
 
 echo "Installed the self-contained OneCut CLI in $INSTALL_DIR"
 case ":$PATH:" in

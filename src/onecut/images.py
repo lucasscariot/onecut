@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from onecut.comments import RenderCopy
+from onecut.captions import RenderCopy
 from onecut.config import Config
 from onecut.errors import OneCutError
 from onecut.media import RenderSettings
@@ -183,5 +183,5 @@ def create_overlays(
         caption_paths.append(path)
 
     print(f"Title card: {'yes' if title_path else 'no'}")
-    print(f"Timed comments: {len(caption_paths)}")
+    print(f"Timed captions: {len(caption_paths)}")
     return title_path, tuple(caption_paths)
