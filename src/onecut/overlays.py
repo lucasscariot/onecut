@@ -4,10 +4,10 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from onecut.captions import RenderCopy
+from onecut.caption_file import RenderCopy
 from onecut.config import Config
 from onecut.errors import OneCutError
-from onecut.media import RenderSettings
+from onecut.rendering import RenderSettings
 
 
 def _font(path: str | None, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:

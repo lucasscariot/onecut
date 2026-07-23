@@ -10,8 +10,6 @@
 *.mkv
 *.MKV
 comments.txt
-final_vlog.mp4
-.*.partial.mp4
 
 # Keep the lightweight test fixture under version control.
 !tests/fixtures/20260720_120000.mp4

@@ -1,13 +1,124 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
+import re
 import sys
 
-from onecut.captions import RenderCopy
-from onecut.config import Config
+from onecut.caption_file import RenderCopy
+from onecut.config import Config, QUALITY_PRESETS
 from onecut.errors import OneCutError
-from onecut.media import RenderSettings
-from onecut.process import run, tool_output
+from onecut.process import has_ffmpeg_feature, run, tool_output
+from onecut.sources import even_dimension, Source
+
+
+@dataclass(frozen=True)
+class RenderSettings:
+    width: int
+    height: int
+    fps: Fraction
+    ten_bit: bool
+    has_hdr: bool
+    has_zscale: bool
+    video_bitrate: str
+    sources: tuple[Source, ...]
+
+
+def determine_settings(
+    config: Config,
+    sources: tuple[Source, ...],
+    ffmpeg: Path,
+) -> RenderSettings:
+    print("== Inspecting source quality ==")
+    try:
+        max_fps = Fraction(config.max_fps)
+    except (ValueError, ZeroDivisionError) as error:
+        raise OneCutError("MAX_FPS must be a positive number.", 2) from error
+    if max_fps <= 0:
+        raise OneCutError("MAX_FPS must be a positive number.", 2)
+
+    orientation_seconds: dict[str, float] = defaultdict(float)
+    for source in sources:
+        orientation = "landscape" if source.display_width >= source.display_height else "portrait"
+        orientation_seconds[orientation] += source.duration
+    dominant = max(orientation_seconds, key=orientation_seconds.get)
+
+    if config.output_size == "auto":
+        candidates = [
+            source
+            for source in sources
+            if ("landscape" if source.display_width >= source.display_height else "portrait")
+            == dominant
+        ]
+        canvas = max(candidates, key=lambda item: item.display_width * item.display_height)
+        width, height = canvas.display_width, canvas.display_height
+        scale = min(
+            1.0,
+            config.max_long_edge / max(width, height),
+            config.max_short_edge / min(width, height),
+        )
+        width = even_dimension(width * scale)
+        height = even_dimension(height * scale)
+    else:
+        width, height = map(int, re.split("[xX]", config.output_size))
+        if width < 2 or height < 2:
+            raise OneCutError("OUTPUT_SIZE dimensions must be at least 2 pixels.", 2)
+        width = even_dimension(width)
+        height = even_dimension(height)
+
+    if config.output_fps == "auto":
+        fps_seconds: dict[Fraction, float] = defaultdict(float)
+        for source in sources:
+            fps_seconds[source.fps] += source.duration
+        fps = max(fps_seconds, key=lambda value: (fps_seconds[value], float(value)))
+    else:
+        try:
+            fps = Fraction(config.output_fps)
+        except (ValueError, ZeroDivisionError) as error:
+            raise OneCutError(
+                "OUTPUT_FPS must be 'auto' or a positive number/rational such as "
+                "30 or 30000/1001.",
+                2,
+            ) from error
+        if fps <= 0:
+            raise OneCutError(
+                "OUTPUT_FPS must be 'auto' or a positive number/rational such as "
+                "30 or 30000/1001.",
+                2,
+            )
+    fps = min(fps, max_fps)
+
+    bitrate = config.video_bitrate
+    if bitrate == "auto":
+        _, reference_width, reference_height, reference_rate = QUALITY_PRESETS[config.quality]
+        reference_pixels = reference_width * reference_height
+        fps_multiplier = 1.0 if float(fps) <= 30 else 1.5
+        rate = reference_rate * (width * height / reference_pixels) * fps_multiplier
+        bitrate = f"{max(6, min(200, round(rate)))}M"
+    elif not re.fullmatch(r"\d+(?:\.\d+)?[kKmM]", bitrate):
+        raise OneCutError("VIDEO_BITRATE must be 'auto' or a value such as 20M or 8000k.", 2)
+
+    settings = RenderSettings(
+        width=width,
+        height=height,
+        fps=fps,
+        ten_bit=any(source.bit_depth > 8 or source.hdr for source in sources),
+        has_hdr=any(source.hdr for source in sources),
+        has_zscale=has_ffmpeg_feature(ffmpeg, ("-filters",), " zscale "),
+        video_bitrate=bitrate,
+        sources=sources,
+    )
+    label = QUALITY_PRESETS[config.quality][0]
+    depth = "10-bit" if settings.ten_bit else "8-bit"
+    print(
+        f"Output ({label}): {width}x{height} at {float(fps):.3f} fps, "
+        f"{depth} HEVC at {bitrate}"
+    )
+    if len(orientation_seconds) > 1:
+        print(f"Mixed orientations: using a {dominant} canvas and padding the others")
+    return settings
 
 
 def _video_toolbox_decode_available(ffmpeg: Path) -> bool:
@@ -160,11 +271,15 @@ def build_filter_complex(
     path.write_text(";\n".join(parts), encoding="utf-8")
 
 
+def _software_encoder_arguments(settings: RenderSettings) -> list[str]:
+    pixel_format = "yuv420p10le" if settings.ten_bit else "yuv420p"
+    return [
+        "-c:v", "libx265", "-preset", "medium", "-crf", "14", "-pix_fmt", pixel_format
+    ]
+
+
 def _encoder_arguments(ffmpeg: Path, config: Config, settings: RenderSettings) -> tuple[list[str], bool]:
-    if settings.ten_bit:
-        software = ["-c:v", "libx265", "-preset", "medium", "-crf", "14", "-pix_fmt", "yuv420p10le"]
-    else:
-        software = ["-c:v", "libx265", "-preset", "medium", "-crf", "14", "-pix_fmt", "yuv420p"]
+    software = _software_encoder_arguments(settings)
     has_video_toolbox = "hevc_videotoolbox" in tool_output(ffmpeg, "-encoders")
     if config.video_encoder in {"auto", "videotoolbox"} and has_video_toolbox:
         if settings.ten_bit:
@@ -249,8 +364,7 @@ def render_video(
     if result != 0 and using_video_toolbox and config.video_encoder == "auto":
         print("Hardware encoding failed; retrying with libx265.", file=sys.stderr)
         partial_file.unlink(missing_ok=True)
-        software, _ = _encoder_arguments_for_software(settings)
-        result = attempt(software)
+        result = attempt(_software_encoder_arguments(settings))
     if result != 0:
         partial_file.unlink(missing_ok=True)
         raise OneCutError("FFmpeg could not render the output video.")
@@ -269,10 +383,3 @@ def render_video(
     except ValueError:
         duration = 0
     print(f"Done: {output_file} ({duration} seconds)")
-
-
-def _encoder_arguments_for_software(settings: RenderSettings) -> tuple[list[str], bool]:
-    pixel_format = "yuv420p10le" if settings.ten_bit else "yuv420p"
-    return [
-        "-c:v", "libx265", "-preset", "medium", "-crf", "14", "-pix_fmt", pixel_format
-    ], False

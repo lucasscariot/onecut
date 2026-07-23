@@ -7,7 +7,7 @@ import re
 import sys
 
 from onecut.errors import OneCutError
-from onecut.media import Source
+from onecut.sources import Source
 
 
 LEGACY_CAPTION = re.compile(r"^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)\s+(.+)$")
@@ -29,14 +29,22 @@ class RenderCopy:
     captions: tuple[Caption, ...]
 
 
-def parse_local_bullet(line: str) -> tuple[float, str] | None:
+def parse_local_bullet(
+    line: str,
+    *,
+    validate_ranges: bool = False,
+) -> tuple[float, str] | None:
     match = LOCAL_BULLET_LONG.fullmatch(line)
     if match:
         hours, minutes, seconds, text = match.groups()
+        if validate_ranges and (int(minutes) > 59 or float(seconds) >= 60):
+            raise ValueError
         return int(hours) * 3600 + int(minutes) * 60 + float(seconds), text.strip()
     match = LOCAL_BULLET_SHORT.fullmatch(line)
     if match:
         minutes, seconds, text = match.groups()
+        if validate_ranges and float(seconds) >= 60:
+            raise ValueError
         return int(minutes) * 60 + float(seconds), text.strip()
     if line.startswith("-"):
         return 0.0, line[1:].strip()
@@ -210,29 +218,14 @@ def parse_captions(
                 raise OneCutError(
                     f"{file_name} line {line_number} is a bullet outside a CLIP section."
                 )
-            if line == "-":
-                continue
-            match = LOCAL_BULLET_LONG.fullmatch(line)
-            if match:
-                hours, minutes, seconds, text = match.groups()
-                if int(minutes) > 59 or float(seconds) >= 60:
-                    raise OneCutError(
-                        f"invalid clip timestamp on {file_name} line {line_number}."
-                    )
-                local_start = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-            else:
-                match = LOCAL_BULLET_SHORT.fullmatch(line)
-                if match:
-                    minutes, seconds, text = match.groups()
-                    if float(seconds) >= 60:
-                        raise OneCutError(
-                            f"invalid clip timestamp on {file_name} line {line_number}."
-                        )
-                    local_start = int(minutes) * 60 + float(seconds)
-                else:
-                    text = line[1:].strip()
-                    local_start = 0.0
-            text = text.strip()
+            try:
+                parsed = parse_local_bullet(line, validate_ranges=True)
+            except ValueError as error:
+                raise OneCutError(
+                    f"invalid clip timestamp on {file_name} line {line_number}."
+                ) from error
+            assert parsed is not None
+            local_start, text = parsed
             if not text:
                 continue
             offset, duration = source_sections[current_clip]

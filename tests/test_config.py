@@ -17,8 +17,7 @@ def test_choose_quality_reprompts_after_invalid_input(monkeypatch, capsys) -> No
     assert "Please choose 1, 2, or 3." in capsys.readouterr().err
 
 
-def test_empty_quality_override_still_prompts(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("ONECUT_DIR", str(tmp_path))
+def test_empty_quality_override_still_prompts(monkeypatch) -> None:
     monkeypatch.setenv("EXPORT_QUALITY", "")
     monkeypatch.setattr(
         config_module,

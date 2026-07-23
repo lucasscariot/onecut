@@ -21,7 +21,7 @@ trap cleanup EXIT INT TERM
 cp "$FIXTURE" "$WORK_DIR/20260720_120000.mp4"
 ONECUT_DIR="$WORK_DIR" "${ONECUT[@]}" captions
 perl -0pi -e 's/TITLE: /TITLE: OneCut smoke test/; s/- 00:00 \n/- 00:00 Caption test\n/' "$WORK_DIR/captions.txt"
-ONECUT_DIR="$WORK_DIR" EXPORT_QUALITY=youtube-1080 "${ONECUT[@]}" output.mp4
+ONECUT_DIR="$WORK_DIR" EXPORT_QUALITY=youtube-1080 "${ONECUT[@]}" render output.mp4
 
 ffprobe -v error -show_entries format=duration -of csv=p=0 "$WORK_DIR/output.mp4" >/dev/null
 

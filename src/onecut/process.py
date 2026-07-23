@@ -22,14 +22,11 @@ def run(
     command: Sequence[str | Path],
     *,
     capture_output: bool = False,
-    check: bool = False,
-    text: bool = True,
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(value) for value in command],
         capture_output=capture_output,
-        check=check,
-        text=text,
+        text=True,
         env=_subprocess_environment(),
     )
 

@@ -1,12 +1,12 @@
 from pathlib import Path
 
-from onecut.captions import (
+from onecut.caption_file import (
     format_time,
     parse_captions,
     parse_local_bullet,
     prepare_captions,
 )
-from onecut.media import Source
+from onecut.sources import Source
 
 
 def source(name: str = "clip.mp4", duration: float = 10.0) -> Source:
@@ -26,9 +26,6 @@ def source(name: str = "clip.mp4", duration: float = 10.0) -> Source:
         fps=Fraction(30),
         pixel_format="yuv420p",
         bit_depth=8,
-        color_transfer="bt709",
-        color_primaries="bt709",
-        color_space="bt709",
         hdr=False,
         duration=duration,
         has_audio=True,

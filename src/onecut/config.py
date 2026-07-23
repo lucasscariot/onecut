@@ -24,6 +24,17 @@ def resolve_input_dir() -> Path:
     return input_dir
 
 
+def resolve_output_paths(input_dir: Path, argument: str | None) -> tuple[Path, Path]:
+    output = Path(argument or "final_onecut.mp4").expanduser()
+    if not output.is_absolute():
+        output = input_dir / output
+    if output.suffix.lower() != ".mp4":
+        raise OneCutError("the output filename must end in .mp4", 2)
+    output = output.resolve()
+    partial = output.with_name(f".{output.name}.partial.mp4")
+    return output, partial
+
+
 def _positive_float(name: str, default: str) -> float:
     raw = os.environ.get(name, default)
     try:
@@ -73,8 +84,6 @@ def choose_quality(current: str) -> str:
 
 @dataclass(frozen=True)
 class Config:
-    input_dir: Path
-    captions_file: Path
     display_seconds: float
     title_seconds: float
     output_size: str
@@ -90,8 +99,6 @@ class Config:
 
     @classmethod
     def load(cls, *, prompt_for_quality: bool = False) -> "Config":
-        input_dir = resolve_input_dir()
-        captions_file = input_dir / "captions.txt"
         quality_override = os.environ.get("EXPORT_QUALITY")
         quality = quality_override or "youtube-4k"
         if quality not in QUALITY_PRESETS:
@@ -112,8 +119,6 @@ class Config:
         if video_encoder not in {"auto", "videotoolbox", "libx265"}:
             raise OneCutError("VIDEO_ENCODER must be auto, videotoolbox, or libx265.", 2)
         return cls(
-            input_dir=input_dir,
-            captions_file=captions_file,
             display_seconds=_positive_float("DISPLAY_SECONDS", "4"),
             title_seconds=_positive_float("TITLE_SECONDS", "5"),
             output_size=output_size,

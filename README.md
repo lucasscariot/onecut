@@ -3,9 +3,10 @@
 Turn a folder of video clips into one finished video with a self-contained CLI.
 
 ```sh
+onecut                # list the available commands
 onecut captions       # generate or refresh captions.txt
-onecut                # create final_onecut.mp4
-onecut holiday.mp4    # choose an output filename
+onecut render         # create final_onecut.mp4
+onecut render holiday.mp4  # choose an output filename
 onecut trim-start 22 CAM_20260720192120_0023_D.MP4  # remove the first 22 seconds
 onecut keep-first 10 CAM_20260720134126_0039_D.MP4 # keep only the first 10 seconds
 onecut trim-end 5 CAM_20260720134126_0039_D.MP4    # remove the final 5 seconds
@@ -31,7 +32,7 @@ To install a specific release, set `ONECUT_VERSION`, for example:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lucasscariot/onecut/main/install.sh \
-  | ONECUT_VERSION=v0.2.0 bash
+  | ONECUT_VERSION=v0.4.0 bash
 ```
 
 ## Requirements
@@ -44,7 +45,7 @@ Python 3.11+, Pillow, FFmpeg, and FFprobe.
 Run OneCut from the folder containing your clips, or point it at a folder:
 
 ```sh
-ONECUT_DIR=/path/to/clips onecut
+ONECUT_DIR=/path/to/clips onecut render
 ```
 
 `onecut captions` creates `captions.txt`. Add `TITLE:` and `DESC:` for an
@@ -62,8 +63,9 @@ onecut keep-first 10 clip.mp4  # keep only the first 10 seconds
 ```
 
 They preserve the clip's embedded metadata and modification time, and copy the
-video/audio streams without re-encoding. Because a lossless cut must use a
-video keyframe, the actual video boundary can be slightly before or after the
+primary video and audio streams without re-encoding. Auxiliary tracks such as
+spatial audio and camera metadata are omitted. Because a lossless cut must use
+a video keyframe, the actual video boundary can be slightly before or after the
 requested timestamp.
 
 When rendering in a terminal, choose an upload preset from the prompt. For
@@ -100,10 +102,11 @@ bundle a specific matching pair. PyInstaller includes their linked libraries
 in the application directory, so normal commands do not unpack dependencies
 into a temporary directory at startup.
 
-The code is split by responsibility under `src/onecut`: CLI orchestration,
-media discovery and probing, comment parsing, Pillow overlay creation, and
-FFmpeg rendering. The tiny test clip is intentionally versioned; other source
-footage and rendered videos remain ignored.
+The `src/onecut/commands` package mirrors the public CLI: `render`, `captions`,
+and the shared trim implementation. Supporting modules handle source discovery,
+the caption file format, Pillow overlays, configuration, and FFmpeg rendering.
+The tiny test clip is intentionally versioned; other source footage and
+rendered videos remain ignored.
 
 Tagged releases are built and smoke-tested on a GitHub-hosted macOS arm64
 runner before publication. Release assets also record the exact FFmpeg build
