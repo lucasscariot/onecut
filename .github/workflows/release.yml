@@ -18,23 +18,31 @@ jobs:
           python-version: "3.12"
       - name: Install build dependencies
         run: |
-          brew install ffmpeg
+          brew install ffmpeg-full
+          echo "ONECUT_FFMPEG_DIR=$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_ENV"
           python -m pip install '.[build,test]'
       - name: Test source package
         run: |
+          "$ONECUT_FFMPEG_DIR/ffmpeg" -hide_banner -filters > "$RUNNER_TEMP/ffmpeg-filters.txt"
+          grep -q " zscale " "$RUNNER_TEMP/ffmpeg-filters.txt"
           pytest
           ./tests/smoke-test.sh
       - name: Build self-contained binary
         run: python scripts/build.py
       - name: Test packaged binary
-        run: ONECUT_BIN="$PWD/dist/onecut/onecut" ./tests/smoke-test.sh
+        run: |
+          bundled_ffmpeg="$PWD/dist/onecut/_internal/onecut/vendor/ffmpeg"
+          test -x "$bundled_ffmpeg"
+          "$bundled_ffmpeg" -hide_banner -filters > "$RUNNER_TEMP/bundled-ffmpeg-filters.txt"
+          grep -q " zscale " "$RUNNER_TEMP/bundled-ffmpeg-filters.txt"
+          env -u ONECUT_FFMPEG_DIR ONECUT_BIN="$PWD/dist/onecut/onecut" ./tests/smoke-test.sh
       - name: Prepare release assets
         run: |
           tar -C dist -czf dist/onecut-darwin-arm64.tar.gz onecut
           cd dist
           shasum -a 256 onecut-darwin-arm64.tar.gz > onecut-darwin-arm64.tar.gz.sha256
-          ffmpeg -version > ffmpeg-build.txt
-          ffmpeg -buildconf >> ffmpeg-build.txt
+          "$ONECUT_FFMPEG_DIR/ffmpeg" -version > ffmpeg-build.txt
+          "$ONECUT_FFMPEG_DIR/ffmpeg" -buildconf >> ffmpeg-build.txt
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

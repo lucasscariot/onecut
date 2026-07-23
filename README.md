@@ -32,7 +32,7 @@ To install a specific release, set `ONECUT_VERSION`, for example:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lucasscariot/onecut/main/install.sh \
-  | ONECUT_VERSION=v0.4.0 bash
+  | ONECUT_VERSION=v0.4.1 bash
 ```
 
 ## Requirements
