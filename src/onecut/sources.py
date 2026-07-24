@@ -102,13 +102,6 @@ def probe(ffprobe: Path, path: Path) -> dict | None:
 
 
 def _timestamp(data: dict, path: Path) -> tuple[float, str, str]:
-    created = getattr(path.stat(), "st_birthtime", None)
-    if created is not None and math.isfinite(created) and created > 0:
-        label = dt.datetime.fromtimestamp(created).astimezone().isoformat(timespec="seconds")
-        return created, label, "created time"
-
-    # Filesystems without a creation timestamp keep the portable metadata-first
-    # behavior used by earlier OneCut releases.
     values = [data.get("format", {}).get("tags", {}).get("creation_time")]
     values.extend(stream.get("tags", {}).get("creation_time") for stream in data.get("streams", []))
     for value in values:
@@ -121,6 +114,10 @@ def _timestamp(data: dict, path: Path) -> tuple[float, str, str]:
             return parsed.timestamp(), value, "metadata"
         except ValueError:
             continue
+    created = getattr(path.stat(), "st_birthtime", None)
+    if created is not None and math.isfinite(created) and created > 0:
+        label = dt.datetime.fromtimestamp(created).astimezone().isoformat(timespec="seconds")
+        return created, label, "created time"
     parsed = _filename_timestamp(path.name)
     if parsed:
         return parsed.timestamp(), parsed.isoformat(), "filename"
